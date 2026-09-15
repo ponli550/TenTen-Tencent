@@ -33,8 +33,8 @@ Enterprises waste 30% of workweek searching for information scattered across Con
 ```
 
 **Trust boundaries**
-- *User identity & platform ACLs* are the trust root. The permission filter re-checks D1 at query time — never a cached snapshot — so a revoked grant takes effect on the next request.
-- *The LLM is untrusted.* It only ever receives the allowed context window. Restricted pages are physically absent from the prompt, so the model cannot paraphrase or leak them (also immunizes against prompt-injection-via-retrieved-content).
+- *User identity & platform ACLs* are the trust root. Every ACL is evaluated against the *platform's own* permission model — Confluence space/page (deny-wins, page-overrides-space), Jira project roles, Slack channel membership, Google Drive file ACLs — re-checked in D1 at query time, never from a cached snapshot, so a revoked grant takes effect on the next request.
+- *The LLM is untrusted.* It only ever receives the allowed context window. Restricted documents are physically absent from the prompt, so the model cannot paraphrase or leak them (also immunizes against prompt-injection-via-retrieved-content).
 - *The audit log is append-only by design.* Each entry stores the previous entry's hash; any modification or deletion breaks the chain and is detected by `verify`.
 - *Deny-wins, page-overrides-space* semantics mirror Confluence: if a page has explicit restriction rows, space-level grants are ignored for it.
 
@@ -42,6 +42,7 @@ Enterprises waste 30% of workweek searching for information scattered across Con
 - *LSH/brute-force cosine over D1-stored embeddings* (vs a vector index) — fine at demo scale, keeps the permission filter trivially auditable; swap to Vectorize for production scale.
 - *Lazy re-embedding* on `updated_at` bump — freshness window is the first query after a push, within the challenge's "minutes" bound.
 - *Single-region D1 + Workers AI* — no server to manage; audit chain anchored in-app rather than on an external ledger (an external anchor is the obvious production hardening).
+- *Cross-platform staleness* (e.g. a Slack message says tickets are closed before Jira reflects it) is surfaced faithfully — each connector ages independently and the freshness pass is per-document.
 
 ## running locally
 

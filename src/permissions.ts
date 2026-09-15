@@ -1,56 +1,57 @@
-import type { User, Page, PermissionRow } from "./types";
+import type { Document, EntityType } from "./types";
 
 /**
- * Confluence permission semantics, enforced AT QUERY TIME (never cached):
+ * Per-platform permission semantics, enforced AT QUERY TIME (never cached).
+ * The unified corpus never flattens these away: each document points at its
+ * platform's own ACL entity and is evaluated with platform-native rules.
  *
- *  1. If a page has ANY explicit permission rows, the page is restricted —
- *     only rows for that page decide access (space-level is ignored for it).
- *  2. Otherwise access is decided by the page's space.
- *  3. Restricted spaces default to deny when the user has no explicit grant.
- *  4. Deny always wins over grant at the same level.
+ *   confluence space/page : deny-wins; a restricted page (acl_type='page')
+ *                           ignores space-level grants entirely.
+ *   jira_project          : project-role grant (absent row = no such role).
+ *   slack_channel         : channel-membership grant.
+ *   drive_file            : file-level ACL grant (absent row = no share).
  *
- * Evaluated live against D1 on every retrieval, so a revoked permission is
- * reflected on the very next query — no stale snapshot.
+ * Explicit deny always wins over grant at the same level.
  */
-export async function canViewPage(
+export async function canViewDocument(
   db: D1Database,
   userId: number,
-  spaceId: number,
-  pageId: number,
+  doc: Pick<Document, "acl_type" | "acl_id">,
 ): Promise<boolean> {
-  const pagePerms = await db
-    .prepare(
-      `SELECT allowed FROM permissions WHERE user_id = ? AND entity_type = 'page' AND entity_id = ?`,
-    )
-    .bind(userId, pageId)
-    .all<{ allowed: 0 | 1 }>();
+  const { acl_type: entityType, acl_id: entityId } = doc;
 
-  if (pagePerms.results.length > 0) {
-    // Page is restricted: deny always wins, and absence of an explicit grant
-    // for THIS user means "not on the page's allow list".
-    return pagePerms.results.some((p) => p.allowed === 1);
+  if (entityType === "page") {
+    // Confluence page restriction: only page-level rows decide access,
+    // deny-wins, and absence of a grant means "not on the allow list".
+    const rows = await db
+      .prepare(
+        `SELECT allowed FROM permissions WHERE user_id = ? AND entity_type = 'page' AND entity_id = ?`,
+      )
+      .bind(userId, entityId)
+      .all<{ allowed: 0 | 1 }>();
+    return rows.results.length > 0 && rows.results.some((r) => r.allowed === 1);
   }
 
-  const spacePerm = await db
+  // Guard against a grant+deny pair at the same scope: deny wins.
+  const rows = await db
     .prepare(
-      `SELECT allowed FROM permissions WHERE user_id = ? AND entity_type = 'space' AND entity_id = ?`,
+      `SELECT allowed FROM permissions WHERE user_id = ? AND entity_type = ? AND entity_id = ?`,
     )
-    .bind(userId, spaceId)
-    .first<{ allowed: 0 | 1 }>();
-
-  if (!spacePerm) return false; // restricted space, no grant => denied
-  return spacePerm.allowed === 1;
+    .bind(userId, entityType, entityId)
+    .all<{ allowed: 0 | 1 }>();
+  if (rows.results.some((r) => r.allowed === 0)) return false;
+  return rows.results.some((r) => r.allowed === 1);
 }
 
-export async function filterAllowedPages(
+export async function filterAllowedDocs(
   db: D1Database,
   userId: number,
-  pages: { id: number; space_id: number }[],
+  docs: { id: number; acl_type: EntityType; acl_id: number }[],
 ): Promise<{ allowed: number[]; denied: number[] }> {
   const allowed: number[] = [];
   const denied: number[] = [];
-  for (const p of pages) {
-    (await canViewPage(db, userId, p.space_id, p.id)) ? allowed.push(p.id) : denied.push(p.id);
+  for (const d of docs) {
+    (await canViewDocument(db, userId, d)) ? allowed.push(d.id) : denied.push(d.id);
   }
   return { allowed, denied };
 }

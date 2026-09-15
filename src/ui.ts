@@ -34,7 +34,7 @@ export function renderUI(): string {
 </head>
 <body>
   <h1>The Internal Brain <span class="muted">— TenTen-Tencent</span></h1>
-  <div class="sub">Permission-aware RAG over Confluence · hash-chained audit trail · live permission revocation</div>
+  <div class="sub">Permission-aware RAG across Confluence · Jira · Slack · Drive · hash-chained audit trail · live revocation</div>
 
   <div class="card">
     <div class="row">
@@ -46,7 +46,7 @@ export function renderUI(): string {
 
   <div class="card">
     <div class="row">
-      <input type="text" id="q" placeholder='Ask… e.g. "What was the root cause of the payment outage and what follow-up tickets were created?"' style="min-width:60%" />
+      <input type="text" id="q" placeholder='Ask… e.g. "What is the status of the database migration project and were there blockers raised in Slack?"' style="min-width:60%" />
       <button id="ask">Ask</button>
     </div>
     <div id="msg" class="muted"></div>
@@ -59,8 +59,9 @@ export function renderUI(): string {
       <strong style="font-size:13px">Audit trail</strong>
       <div class="row">
         <button class="ghost" id="verify">Verify chain integrity</button>
+        <button class="ghost" id="fresh">Push Slack update (freshness)</button>
         <button class="danger" id="tamper">Tamper with last entry (demo)</button>
-        <button class="ghost" id="revoke">Revoke junior ← security page</button>
+        <button class="ghost" id="revoke">Revoke junior ← #secops-alerts</button>
       </div>
     </div>
     <div id="verify-out"></div>
@@ -90,11 +91,12 @@ async function ask() {
   $("msg").textContent = "";
   const a = $("answer");
   a.style.display = "block";
-  var srcs = out.citations.map(c => "<span class=\"cite\">[" + c.ref + "]</span> <a href=\"#\" style=\"color:#58a6ff\">" + esc(c.title) + "</a>").join("<br>");
+  var srcs = out.citations.map(c => "<span class=\"cite\">[" + c.ref + "]</span> <a href=\"#\" style=\"color:#58a6ff\">[" + c.platform + "] " + esc(c.title) + "</a>").join("<br>");
   a.innerHTML = esc(out.answer) + (out.citations.length ? "<br><br><span class='muted'>Sources:</span><br>" + srcs : "");
   const r = $("retrieval"); r.style.display = "block";
+  var platColor = { confluence:"1f6feb", jira:"8957e5", slack:"3ebd73", drive:"e08d44" };
   r.innerHTML = "<span class='muted'>Retrieval window:</span> " +
-    out.allowed.map(p => "<span class=\"tag allowed\">" + esc(p.title) + "</span>").join("") +
+    out.allowed.map(d => "<span class=\"tag allowed\" style=\"border-color:" + (platColor[d.platform] || "30363d") + "\">[" + d.platform + "] " + esc(d.title) + "</span>").join(" ") +
     (out.denied_count ? "<span class=\"tag denied\">" + out.denied_count + " filtered (no permission)</span>" : "");
   await loadAudit();
 }
@@ -126,8 +128,17 @@ $("tamper").onclick = async () => {
   $("verify-out").innerHTML = "<span class=\"muted\">Tampered seq " + out.seq + " — now press “Verify chain integrity”</span>";
 };
 
+$("fresh").onclick = async () => {
+  const out = await api("/api/sync", {
+    platform: "slack", external_id: "SH-004", acl_type: "slack_channel", acl_id: 1,
+    title: "#payments-migration (just now): failover drill",
+    body: "Failover drill done — failover-first order confirmed working. No incidents. Postmortem finalizing; G-001 updated with timeline."
+  });
+  $("verify-out").innerHTML = "<span class=\"muted\">Pushed Slack update (doc " + out.document_id + "). Next ask reflects it.</span>";
+};
+
 $("revoke").onclick = async () => {
-  const out = await api("/api/revoke", { user_email: "junior@acme.co", page_id: 4 });
+  const out = await api("/api/revoke", { user_email: "junior@acme.co", entity_type: "slack_channel", entity_id: 2 });
   $("verify-out").innerHTML = "<span class=\"muted\">Revoked junior → “" + out.title + "”. Next ask as junior drops it.</span>";
 };
 

@@ -5,7 +5,14 @@ export interface Env {
   LLM_MODEL: string;
 }
 
-export type EntityType = "space" | "page";
+export type EntityType =
+  | "space"
+  | "page"
+  | "jira_project"
+  | "slack_channel"
+  | "drive_file";
+
+export type Platform = "confluence" | "jira" | "slack" | "drive";
 
 export interface User {
   id: number;
@@ -14,13 +21,16 @@ export interface User {
   role: string;
 }
 
-export interface Page {
+export interface Document {
   id: number;
-  space_id: number;
+  platform: Platform;
+  external_id: string;
   title: string;
   body: string;
   updated_at: string;
   version: number;
+  acl_type: EntityType;
+  acl_id: number;
 }
 
 export interface PermissionRow {

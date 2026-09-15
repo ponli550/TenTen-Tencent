@@ -1,4 +1,4 @@
-import { Env, User, Page } from "./types";
+import { Env, User, Document } from "./types";
 import { appendAudit, verifyChain, latestSeq } from "./audit";
 import { permissionAwareRetrieve, ensureEmbeddingFresh } from "./retrieval";
 import { answerGrounded } from "./llm";
@@ -9,8 +9,8 @@ async function getUser(db: D1Database, email: string): Promise<User | null> {
   return row ?? null;
 }
 
-async function getPage(db: D1Database, id: number): Promise<Page | null> {
-  const row = await db.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first<Page>();
+async function getDoc(db: D1Database, id: number): Promise<Document | null> {
+  const row = await db.prepare("SELECT * FROM documents WHERE id = ?").bind(id).first<Document>();
   return row ?? null;
 }
 
@@ -44,7 +44,7 @@ export default {
 
         const { candidates, allowed, deniedIds } = await permissionAwareRetrieve(env, user.id, query);
         let answerText = "I could not find that in the sources I am allowed to view.";
-        let citations: { ref: number; page_id: number; title: string }[] = [];
+        let citations: { ref: number; document_id: number; title: string; platform: string }[] = [];
         if (allowed.length > 0) {
           const grounded = await answerGrounded(env, query, allowed);
           answerText = grounded.text;
@@ -56,8 +56,8 @@ export default {
           actor_id: user.id,
           action: "ask",
           query,
-          candidates: JSON.stringify(candidates.map((p) => p.id)),
-          allowed: JSON.stringify(allowed.map((p) => p.id)),
+          candidates: JSON.stringify(candidates.map((d) => d.id)),
+          allowed: JSON.stringify(allowed.map((d) => d.id)),
           denied: JSON.stringify(deniedIds),
           answer: answerText,
         });
@@ -66,7 +66,7 @@ export default {
           ok: true,
           answer: answerText,
           citations,
-          allowed: allowed.map((p) => ({ id: p.id, title: p.title })),
+          allowed: allowed.map((d) => ({ id: d.id, title: d.title, platform: d.platform })),
           denied_count: deniedIds.length,
         });
       }
@@ -84,7 +84,6 @@ export default {
       }
 
       if (url.pathname === "/api/audit/tamper") {
-        // Demo-only: mutates the most recent entry to prove tamper-evidence.
         const seq = await latestSeq(env.DB);
         if (seq === 0) return json({ ok: false, error: "no entries yet" }, 400);
         await env.DB.prepare(
@@ -94,57 +93,68 @@ export default {
       }
 
       if (url.pathname === "/api/revoke") {
+        // Generic per-platform revocation: deny the actor on an ACL entity
+        // (page, project, channel, file). Deny-wins, enforced next query.
         const email = String((body as { user_email?: string }).user_email ?? "");
-        const pageId = Number((body as { page_id?: number }).page_id);
+        const entityType = String((body as { entity_type?: string }).entity_type ?? "page");
+        const entityId = Number((body as { entity_id?: number }).entity_id);
         const user = await getUser(env.DB, email);
-        const page = await getPage(env.DB, pageId);
-        if (!user || !page) return json({ ok: false, error: "unknown user or page" }, 400);
-        // Deny-wins page restriction: evaluator sees this page row and blocks.
+        if (!user) return json({ ok: false, error: "unknown user" }, 400);
+        const doc = await env.DB.prepare(
+          "SELECT * FROM documents WHERE acl_type = ? AND acl_id = ? LIMIT 1",
+        ).bind(entityType, entityId).first<Document>();
         await env.DB.prepare(
-          `INSERT INTO permissions (user_id, entity_type, entity_id, allowed) VALUES (?, 'page', ?, 0)
+          `INSERT INTO permissions (user_id, entity_type, entity_id, allowed) VALUES (?, ?, ?, 0)
            ON CONFLICT(user_id, entity_type, entity_id) DO UPDATE SET allowed = 0`,
-        ).bind(user.id, pageId).run();
+        ).bind(user.id, entityType, entityId).run();
         await appendAudit(env.DB, {
           created_at: new Date().toISOString(),
           actor_id: user.id,
           action: "revoke",
           query: "",
-          candidates: JSON.stringify([pageId]),
+          candidates: JSON.stringify(doc ? [doc.id] : [entityId]),
           allowed: "[]",
-          denied: JSON.stringify([pageId]),
-          answer: `permission revoked for ${email} on page ${pageId}`,
+          denied: JSON.stringify(doc ? [doc.id] : [entityId]),
+          answer: `permission revoked for ${email} on ${entityType}(${entityId})`,
         });
-        return json({ ok: true, title: page.title });
+        return json({ ok: true, title: doc?.title ?? `${entityType} ${entityId}` });
       }
 
       if (url.pathname === "/api/sync") {
-        // Simulate a Confluence push. With page_id: update that page in
-        // place (freshness). Without: insert a brand-new page. Either way
-        // the updated_at bump makes embeddings stale, so the NEXT query
-        // re-embeds before retrieval — no stale snapshots.
-        const bodySync = body as { page_id?: number; title?: string; body?: string };
-        const content = String(bodySync.body ?? "Fresh content pushed at query time.");
-        const title = String(bodySync.title ?? "Live sync test page");
+        // Simulate a platform push (freshness): update an existing document by
+        // platform+external_id, or insert a new one. updated_at bump makes the
+        // embedding stale, so the NEXT query re-embeds before retrieval.
+        const s = body as {
+          platform?: string;
+          external_id?: string;
+          title?: string;
+          body?: string;
+          acl_type?: string;
+          acl_id?: number;
+        };
+        const platform = (s.platform ?? "slack") as Document["platform"];
+        const externalId = String(s.external_id ?? `SYNC-${Date.now()}`);
+        const title = String(s.title ?? "Live sync message");
+        const content = String(s.body ?? "Fresh content pushed at query time.");
+        const aclType = (s.acl_type ?? "slack_channel") as Document["acl_type"];
+        const aclId = Number(s.acl_id ?? 2);
 
-        if (bodySync.page_id) {
-          const existing = await getPage(env.DB, bodySync.page_id);
-          if (!existing) return json({ ok: false, error: "page not found" }, 404);
+        const existing = await env.DB.prepare(
+          "SELECT * FROM documents WHERE platform = ? AND external_id = ?",
+        ).bind(platform, externalId).first<Document>();
+
+        if (existing) {
           await env.DB.prepare(
-            "UPDATE pages SET body = ?, updated_at = ?, version = version + 1 WHERE id = ?",
-          ).bind(content, new Date().toISOString(), bodySync.page_id).run();
-          return json({ ok: true, page_id: bodySync.page_id, title: existing.title });
+            "UPDATE documents SET body = ?, title = ?, updated_at = ?, version = version + 1 WHERE id = ?",
+          ).bind(content, title, new Date().toISOString(), existing.id).run();
+          return json({ ok: true, document_id: existing.id, title });
         }
 
         const { meta } = await env.DB.prepare(
-          "INSERT INTO pages (space_id, title, body, updated_at, version) VALUES (1, ?, ?, ?, 1)",
-        ).bind(title, content, new Date().toISOString()).run();
-        return json({ ok: true, page_id: Number(meta?.last_row_id ?? -1), title });
-      }
-
-      if (url.pathname === "/api/seed-embeddings") {
-        const p4 = await getPage(env.DB, 4);
-        if (p4) await ensureEmbeddingFresh(env, p4, null);
-        return json({ ok: true });
+          `INSERT INTO documents (platform, external_id, title, body, updated_at, version, acl_type, acl_id)
+           VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+        ).bind(platform, externalId, title, content, new Date().toISOString(), aclType, aclId).run();
+        return json({ ok: true, document_id: Number(meta?.last_row_id ?? -1), title });
       }
 
       return json({ ok: false, error: "not found" }, 404);

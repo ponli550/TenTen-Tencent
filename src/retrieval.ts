@@ -1,5 +1,5 @@
-import { Env, Page } from "./types";
-import { filterAllowedPages } from "./permissions";
+import { Env, Document } from "./types";
+import { filterAllowedDocs } from "./permissions";
 
 export async function embedTexts(env: Env, texts: string[]): Promise<number[][]> {
   // bge-base-en-v1.5 takes { text } singular. Loop + cache in D1 afterwards.
@@ -29,52 +29,56 @@ export function cosineSim(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-/** Recompute a page's embedding when it's stale (freshness). */
-export async function ensureEmbeddingFresh(env: Env, page: Page, currentEmbed: string | null) {
-  if (currentEmbed && page.updated_at <= currentEmbed.split("::")[0]) return;
-  const [vec] = await embedTexts(env, [page.title + "\n" + page.body]);
+/** Recompute a document's embedding when stale (freshness). */
+export async function ensureEmbeddingFresh(
+  env: Env,
+  doc: Document,
+  currentEmbed: string | null,
+) {
+  if (currentEmbed && doc.updated_at <= currentEmbed.split("::")[0]) return;
+  const [vec] = await embedTexts(env, [doc.title + "\n" + doc.body]);
   await env.DB.prepare(
-    `INSERT INTO page_embeddings (page_id, embedding, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(page_id) DO UPDATE SET embedding = excluded.embedding, updated_at = excluded.updated_at`,
+    `INSERT INTO document_embeddings (document_id, embedding, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(document_id) DO UPDATE SET embedding = excluded.embedding, updated_at = excluded.updated_at`,
   )
-    .bind(page.id, `${page.updated_at}::${JSON.stringify(vec)}`, new Date().toISOString())
+    .bind(doc.id, `${doc.updated_at}::${JSON.stringify(vec)}`, new Date().toISOString())
     .run();
 }
 
 /**
- * Permission-aware retrieval: embed the query, rank all pages by cosine
- * similarity, then filter to pages the ACTOR may view BEFORE any LLM call.
- * Denied candidates never enter the context window (no prompt-injection
- * via retrieved content, no leakage of denied content).
+ * Cross-platform permission-aware retrieval. One embed+rank pass over the
+ * unified corpus, then EVERY candidate is filtered through its platform's own
+ * ACL before the LLM ever sees it. Denied documents do not enter the context
+ * window — no leakage, no prompt-injection-via-retrieved-content.
  */
 export async function permissionAwareRetrieve(
   env: Env,
   userId: number,
   query: string,
-  topK = 6,
-): Promise<{ candidates: Page[]; allowed: Page[]; deniedIds: number[] }> {
-  // Freshness pass: re-embed any page updated since its last embed.
-  const pages = await env.DB.prepare(
-    `SELECT p.*, e.embedding AS emb
-       FROM pages p
-       LEFT JOIN page_embeddings e ON e.page_id = p.id`,
-  ).all<Page & { emb: string | null }>();
+  topK = 8,
+): Promise<{ candidates: Document[]; allowed: Document[]; deniedIds: number[] }> {
+  // Freshness pass: re-embed any doc updated since its last embed.
+  const docs = await env.DB.prepare(
+    `SELECT d.*, e.embedding AS emb
+       FROM documents d
+       LEFT JOIN document_embeddings e ON e.document_id = d.id`,
+  ).all<Document & { emb: string | null }>();
 
-  for (const p of pages.results) {
-    await ensureEmbeddingFresh(env, { ...p }, p.emb);
+  for (const d of docs.results) {
+    await ensureEmbeddingFresh(env, d, d.emb);
   }
 
   const fresh = await env.DB.prepare(
-    `SELECT p.*, e.embedding AS emb
-       FROM pages p
-       LEFT JOIN page_embeddings e ON e.page_id = p.id`,
-  ).all<Page & { emb: string | null }>();
+    `SELECT d.*, e.embedding AS emb
+       FROM documents d
+       LEFT JOIN document_embeddings e ON e.document_id = d.id`,
+  ).all<Document & { emb: string | null }>();
 
   const [q] = await embedTexts(env, [query]);
 
   const ranked = fresh.results
-    .map((p) => {
-      const embJson = p.emb?.split("::")[1];
+    .map((d) => {
+      const embJson = d.emb?.split("::")[1];
       let score = -1;
       if (embJson) {
         try {
@@ -83,24 +87,24 @@ export async function permissionAwareRetrieve(
           score = -1;
         }
       }
-      return { page: p, score };
+      return { doc: d, score };
     })
     .sort((a, b) => b.score - a.score);
 
   const candidates = ranked
     .filter((r) => r.score > 0.25)
     .slice(0, topK)
-    .map((r) => r.page);
+    .map((r) => r.doc);
 
-  const { allowed, denied } = await filterAllowedPages(
+  const { allowed, denied } = await filterAllowedDocs(
     env.DB,
     userId,
-    candidates.map((p) => ({ id: p.id, space_id: p.space_id })),
+    candidates.map((d) => ({ id: d.id, acl_type: d.acl_type, acl_id: d.acl_id })),
   );
 
   return {
     candidates,
-    allowed: candidates.filter((p) => allowed.includes(p.id)),
+    allowed: candidates.filter((d) => allowed.includes(d.id)),
     deniedIds: denied,
   };
 }

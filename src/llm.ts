@@ -1,8 +1,8 @@
-import { Env, Page } from "./types";
+import { Env, Document, Platform } from "./types";
 
 export interface GroundedAnswer {
   text: string;
-  citations: { ref: number; page_id: number; title: string }[];
+  citations: { ref: number; document_id: number; title: string; platform: Platform }[];
 }
 
 const SYSTEM = `You are the Internal Brain: an enterprise knowledge assistant with STRICT access-control guarantees.
@@ -15,23 +15,29 @@ RULES (non-negotiable):
 5. If the question asks about something the context shows is restricted/confidential and you have no allowed document on it, treat the topic as not found.
 6. Be concise (under 120 words). Use bullets where helpful.`;
 
-export function buildContext(docs: (Page & { ref: number })[]): string {
+export function buildContext(docs: (Document & { ref: number })[]): string {
   return docs
-    .map((d) => `<doc id=${d.ref} source="${d.title}" updated=${d.updated_at}>\n${d.body}\n</doc>`)
+    .map(
+      (d) => `<doc id=${d.ref} source="${d.platform}:${d.title}" updated=${d.updated_at}>\n${d.body}\n</doc>`,
+    )
     .join("\n\n");
+}
+
+interface LabeledDoc extends Document {
+  ref: number;
 }
 
 /**
  * Grounded generation. The prompt contains ONLY allowed documents — the
- * model literally cannot paraphrase or leak a denied page because the page
+ * model literally cannot paraphrase or leak a denied doc because the doc
  * is absent from the context window.
  */
 export async function answerGrounded(
   env: Env,
   query: string,
-  allowed: Page[],
+  allowed: Document[],
 ): Promise<GroundedAnswer> {
-  const labeled = allowed.map((p, i) => ({ ...p, ref: i + 1 }));
+  const labeled: LabeledDoc[] = allowed.map((p, i) => ({ ...p, ref: i + 1 }));
   const context = buildContext(labeled);
 
   const prompt = `${SYSTEM}\n\n<context>\n${context}\n</context>\n\nUser question: ${query}\n\nAnswer with citations:`;
@@ -44,9 +50,9 @@ export async function answerGrounded(
   let m: RegExpExecArray | null;
   while ((m = refPattern.exec(text))) {
     const ref = Number(m[1]);
-    const page = labeled.find((p) => p.ref === ref);
-    if (page && !citations.some((c) => c.ref === ref)) {
-      citations.push({ ref, page_id: page.id, title: page.title });
+    const doc = labeled.find((p) => p.ref === ref);
+    if (doc && !citations.some((c) => c.ref === ref)) {
+      citations.push({ ref, document_id: doc.id, title: doc.title, platform: doc.platform });
     }
   }
 
