@@ -1,10 +1,10 @@
 {
   "name": "TenTen-Tencent",
-  "one_liner": "",
-  "problem": "",
-  "market": "",
-  "track": "",
-  "source": "",
+  "one_liner": "AI-augmented enterprise knowledge system that unifies Confluence, Jira, Slack, and Google Drive under permission-aware retrieval with full audit trail.",
+  "problem": "Enterprises waste 30% of workweek searching for information scattered across Confluence, Jira, Slack, and Google Drive. Existing AI assistants ignore access controls entirely — a junior engineer can leak security-team-only pages. The Internal Brain solves this with RBAC-enforced retrieval and tamper-evident audit logging.",
+  "market": "Enterprise IT / engineering teams at companies with 500+ employees using multiple knowledge platforms",
+  "track": "gen-ai",
+  "source": "https://github.com/ponli550/TenTen-Tencent",
   "demo": "",
-  "status": "draft"
+  "status": "active"
 }
