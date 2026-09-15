@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "tenten-tencent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tenten",
+      "database_id": "06f51490-1cb0-4af4-b33c-f7555e736be4",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "vars": {
+    "EMBED_MODEL": "@cf/baai/bge-base-en-v1.5",
+    "LLM_MODEL": "@cf/meta/llama-3.1-8b-instruct-fp8"
+  }
+}

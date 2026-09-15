@@ -2,6 +2,8 @@
 
 AI-augmented enterprise knowledge system that unifies Confluence, Jira, Slack, and Google Drive under permission-aware retrieval with full audit trail.
 
+**Live demo:** https://tenten-tencent.nazrijz336.workers.dev
+
 ## problem
 
 Enterprises waste 30% of workweek searching for information scattered across Confluence, Jira, Slack, and Google Drive. Existing AI assistants ignore access controls entirely — a junior engineer can leak security-team-only pages. The Internal Brain solves this with RBAC-enforced retrieval and tamper-evident audit logging.
